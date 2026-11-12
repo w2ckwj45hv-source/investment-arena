@@ -1,0 +1,69 @@
+# KI-Team: tägliches Meeting direkt nach Börsenschluss in New York (16:00 Uhr dort).
+# Deutsche Zeit: ca. 22:20 Uhr (Winter) bzw. 21:20 Uhr (Sommer) – der erste Schritt prüft die New-York-Uhrzeit,
+# deshalb passt es automatisch bei Sommer-/Winterzeit. 23:20 UTC ist ein Ersatztermin, falls GitHub sich verspätet.
+# Ist das Meeting für den Tag schon gelaufen, macht ein weiterer Start nichts mehr.
+name: KI-Team Tagesmeeting
+
+on:
+  schedule:
+    - cron: "20 20,21,23 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ki-team
+  cancel-in-progress: false
+
+jobs:
+  meeting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HAS_KEYS: ${{ secrets.ALPACA_KEY_ID != '' }}
+    steps:
+      - name: Ist die US-Börse schon zu?
+        id: zeit
+        run: |
+          # Ohne hinterlegte Alpaca-Schlüssel (z. B. in einer frischen Kopie) passiert nichts.
+          if [ "$HAS_KEYS" != "true" ]; then
+            echo "Keine Alpaca-Schlüssel hinterlegt – übersprungen"; echo "los=nein" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          ny=$(TZ=America/New_York date +%H%M)
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || { [ "$ny" -ge 1610 ] && [ "$ny" -lt 2000 ]; }; then
+            echo "Los geht's (New York: $ny)"; echo "los=ja" >> "$GITHUB_OUTPUT"
+          else
+            echo "Noch nicht dran (New York: $ny) – übersprungen"; echo "los=nein" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.zeit.outputs.los == 'ja'
+
+      - uses: actions/setup-python@v5
+        if: steps.zeit.outputs.los == 'ja'
+        with:
+          python-version: "3.11"
+
+      - name: Programme installieren
+        if: steps.zeit.outputs.los == 'ja'
+        run: pip install -r requirements-cloud.txt
+
+      - name: Team-Meeting
+        if: steps.zeit.outputs.los == 'ja'
+        run: python run_team.py
+        env:
+          ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Gedächtnis und Bericht speichern
+        if: always() && steps.zeit.outputs.los == 'ja'
+        run: |
+          git config user.name "KI-Team"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for f in data/arena.db data/cache/*.csv data/cache/*.json BERICHT.md; do
+            if [ -e "$f" ]; then git add -f "$f"; fi
+          done
+          git diff --cached --quiet || git commit -m "Team-Meeting $(date +%d.%m.%Y)"
+          git push
